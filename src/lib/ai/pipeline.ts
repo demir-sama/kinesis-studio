@@ -59,7 +59,16 @@ export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signa
       if (cfg.research && input.research !== false) tools.push({ type: "otari_web_search", max_uses: 2 });
       const mcp = cfg.mcpUrl ? { mcp_servers: [{ name: "kinesis", url: cfg.mcpUrl, purpose_hint: "Kinesis motion toolkit: exact named easing curves and motion-design principles.", allowed_tools: ["get_easing", "motion_principles"] }] } : {};
       yield { type: "step", id: "director", role: "director", label: "Director is writing the motion brief", status: "run", detail: [tools.length ? "web search" : null, cfg.mcpUrl ? "Kinesis MCP" : null, cfg.guardrails.length ? "guardrails" : null].filter(Boolean).join(" · ") };
-      const d = yield* call("director", cfg.models.director, { messages: [{ role: "system", content: DIRECTOR_SYSTEM }, { role: "user", content: input.prompt }], temperature: 0.6, max_tokens: 1800, ...(tools.length ? { tools } : {}), ...mcp, ...guard });
+      const dBody = { messages: [{ role: "system", content: DIRECTOR_SYSTEM }, { role: "user", content: input.prompt }], temperature: 0.6, max_tokens: 1800, ...guard };
+      let d: ChatResult;
+      try {
+        d = yield* call("director", cfg.models.director, { ...dBody, ...(tools.length ? { tools } : {}), ...mcp });
+      } catch (e) {
+        // Hosted workspaces may not have web search / MCP enabled (403/400). Brief without tools instead of failing the run.
+        if (!(e instanceof OtariError) || ![400, 403, 404, 422].includes(e.status) || (!tools.length && !cfg.mcpUrl)) throw e;
+        yield { type: "step", id: "director", role: "director", label: "Tools unavailable on this gateway; briefing without them", status: "run", detail: e.message.slice(0, 160) };
+        d = yield* call("director", cfg.models.director, dBody);
+      }
       try { brief = extractJson(d.content); } catch { brief = { intent: d.content.slice(0, 1200) }; }
       yield { type: "brief", brief };
       yield { type: "step", id: "director", role: "director", label: "Motion brief ready", status: "ok" };
