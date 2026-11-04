@@ -52,3 +52,24 @@ test("every preset lints clean and exports to all four targets", () => {
     assert.ok(exportFramer(p).includes("motion.div"));
   }
 });
+
+import { fitToFrame, restingBounds } from "../src/lib/motion/frame";
+test("fitToFrame pulls a spilling composition inside the safe area", () => {
+  const card = (id: string, x: number) => ({ id, name: id, fill: "#ffffff", shape: { kind: "rect" as const, w: 180, h: 120 }, base: { x, y: 225, scaleX: 1, scaleY: 1, rotate: 0, opacity: 1 }, tracks: { x: [{ t: 0, v: -200 }, { t: 400, v: x }] } });
+  const tl: any = { version: 1, name: "t", duration: 1000, fps: 60, size: { w: 800, h: 450 }, background: "#000000", layers: [card("a", 140), card("b", 340), card("c", 540), card("d", 740)] };
+  const { timeline, notes } = fitToFrame(tl);
+  const b = restingBounds(timeline)!;
+  assert.ok(notes.length > 0);
+  assert.ok(b.x0 >= 39.5 && b.x1 <= 760.5, JSON.stringify(b));
+});
+
+import { humanizeStagger } from "../src/lib/motion/humanize";
+test("humanizeStagger varies a uniform cadence", () => {
+  const card = (id: string, t0: number) => ({ id, name: id, fill: "#ffffff", shape: { kind: "rect" as const, w: 100, h: 80 }, base: { x: 400, y: 225, scaleX: 1, scaleY: 1, rotate: 0, opacity: 1 }, tracks: { x: [{ t: t0, v: -200 }, { t: t0 + 400, v: 400 }] } });
+  const tl: any = { version: 1, name: "t", duration: 1400, fps: 60, size: { w: 800, h: 450 }, background: "#000000", layers: [0, 80, 160, 240].map((t, i) => card("c" + i, t)) };
+  const { timeline, notes } = humanizeStagger(tl);
+  const st = timeline.layers.map((l: any) => l.tracks.x[0].t);
+  const d = st.slice(1).map((s: number, i: number) => s - st[i]);
+  assert.equal(notes.length, 1);
+  assert.ok(new Set(d).size > 1, JSON.stringify(d));
+});

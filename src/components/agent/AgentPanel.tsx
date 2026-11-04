@@ -61,10 +61,10 @@ export function AgentPanel({ ctx }: { ctx: AgentContext }) {
   const tools = events.filter((e) => e.type === "tool");
   const calls = events.filter((e) => e.type === "usage");
   const brief = events.find((e) => e.type === "brief")?.brief;
-  const crit = events.find((e) => e.type === "critique")?.critique;
+  const crit = [...events].reverse().find((e) => e.type === "critique")?.critique;
   const done = events.find((e) => e.type === "done");
   const err = events.find((e) => e.type === "error");
-  const tlEv = events.find((e) => e.type === "timeline");
+  const tlEv = [...events].reverse().find((e) => e.type === "timeline");
   const offline = status && (!status.configured || !status.reachable);
 
   return (

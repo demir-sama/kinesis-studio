@@ -1,6 +1,14 @@
 import type { MotionReport, Timeline } from "../motion";
-import { lintTimeline, normalizeTimeline } from "../motion";
-import { chat, executeCode, OtariError, type CallMeta, type ChatResult, type OtariToolCall } from "../otari/client";
+import { fitToFrame, humanizeStagger, lintTimeline, normalizeTimeline as rawNormalize } from "../motion";
+
+/** Normalise model output, then keep the resting composition inside the frame's safe area. */
+function normalizeTimeline(raw: unknown) {
+  const n = rawNormalize(raw);
+  const h = humanizeStagger(n.timeline);
+  const f = fitToFrame(h.timeline);
+  return { timeline: f.timeline, repairs: [...n.repairs, ...h.notes, ...f.notes] };
+}
+import { chat, estimateCost, executeCode, OtariError, type CallMeta, type ChatResult, type OtariToolCall } from "../otari/client";
 import type { OtariConfig } from "../otari/config";
 import { extractJson } from "./json";
 import { ANIMATOR_SYSTEM, CRITIC_SYSTEM, DIRECTOR_SYSTEM, REFINE_SYSTEM } from "./prompts";
@@ -23,7 +31,7 @@ export interface ToolSummary { type: string; status?: string; query?: string; so
 export interface SandboxValidation { ok: boolean; errors: string[]; warnings: string[]; stats?: Record<string, unknown>; ms: number }
 export interface Critique { score: number; verdict: string; strengths: string[]; fixes: { issue: string; suggestion: string }[]; refine_prompt: string }
 
-export interface PipelineInput { prompt: string; mode: "generate" | "refine"; current?: Timeline; research?: boolean; critique?: boolean; userId: string }
+export interface PipelineInput { prompt: string; mode: "generate" | "refine"; current?: Timeline; research?: boolean; critique?: boolean; polish?: boolean; userId: string }
 
 function summarize(c: OtariToolCall): ToolSummary {
   const err = c.error == null ? undefined : typeof c.error === "string" ? c.error : JSON.stringify(c.error).slice(0, 200);
@@ -43,6 +51,7 @@ export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signa
 
   async function* call(role: Role, requested: string, body: Record<string, unknown>): AsyncGenerator<PipelineEvent, ChatResult> {
     const res = await chat(cfg, { model: requested, ...(user ? { user } : {}), ...body }, signal);
+    if (res.meta.costUsd == null) { const est = await estimateCost(cfg, requested, res.meta.promptTokens, res.meta.completionTokens); if (est != null) { res.meta.costUsd = est; res.meta.pricingSource = "estimated from /models"; } }
     calls++; cost += res.meta.costUsd ?? 0; models[role] = res.meta.model ?? requested;
     yield { type: "usage", role, meta: res.meta, requested };
     for (const tc of res.toolCalls) yield { type: "tool", role, call: summarize(tc) };
@@ -102,22 +111,45 @@ export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signa
     timeline.name = timeline.name || "Untitled";
     yield { type: "timeline", timeline, repairs, report, validation, models: { ...models } };
 
-    // 4 · Critic — a third model, a different role.
+    // 4 · Critic — a third model, a different role. 5 · If it scores below 8, one automatic polish pass.
     if (input.critique !== false) {
-      yield { type: "step", id: "critic", role: "critic", label: "Critic is reviewing the motion", status: "run" };
-      try {
-        const c = yield* call("critic", cfg.models.critic, { messages: [{ role: "system", content: CRITIC_SYSTEM }, { role: "user", content: `Request: ${input.prompt}\nDuration ${timeline.duration}ms, loop ${timeline.loop !== false}.\nTimeline:\n${describe(timeline)}\n\nLint: ${JSON.stringify(report.issues.slice(0, 10).map((i) => `${i.severity}: ${i.message}`))}` }], temperature: 0.3, max_tokens: 900, response_format: { type: "json_object" } });
-        const j = extractJson(c.content) as Partial<Critique>;
-        const critique: Critique = { score: Math.max(0, Math.min(10, Number(j.score) || 0)), verdict: String(j.verdict ?? ""), strengths: (j.strengths ?? []).map(String).slice(0, 3), fixes: (j.fixes ?? []).slice(0, 3).map((f: any) => ({ issue: String(f?.issue ?? f), suggestion: String(f?.suggestion ?? "") })), refine_prompt: String(j.refine_prompt ?? "") };
-        yield { type: "critique", critique };
-        yield { type: "step", id: "critic", role: "critic", label: `Critic scored it ${critique.score}/10`, status: "ok" };
-      } catch (e) { yield { type: "step", id: "critic", role: "critic", label: "Critic unavailable", status: "fail", detail: (e as Error).message }; }
+      let critique = yield* critic(timeline, report, "Critic is reviewing the motion");
+      for (let pass = 1; pass <= 2 && critique && critique.score < 8 && input.mode === "generate" && input.polish !== false; pass++) {
+        yield { type: "step", id: "polish", role: "animator", label: `Polish pass ${pass}: applying the critic's notes (${critique.score}/10)`, status: "run" };
+        try {
+          const notes = [critique.refine_prompt, ...critique.fixes.map((f) => `${f.issue} → ${f.suggestion}`)].filter(Boolean).join("\n- ");
+          const pr = yield* call("animator", cfg.models.animator, { messages: [{ role: "system", content: REFINE_SYSTEM }, { role: "user", content: `CURRENT timeline:\n${JSON.stringify(timeline)}\n\nOriginal request: ${input.prompt}\n\nA motion director reviewed it. Apply these notes, keep layer ids, colours and composition:\n- ${notes}\n\nAlso: vary stagger intervals (never a uniform cadence), hold every impact/contact pose for at least 60 ms, and keep the resting layout inside the 40 px safe margin.` }], temperature: 0.3, max_tokens: 8000, response_format: { type: "json_object" } });
+          const p = normalizeTimeline(extractJson(pr.content));
+          const pReport = lintTimeline(p.timeline);
+          if (pReport.issues.some((i) => i.severity === "error")) throw new Error("polished timeline failed lint");
+          const pVal = yield* sandboxValidate(p.timeline);
+          if (pVal && !pVal.ok) throw new Error("polished timeline failed sandbox validation");
+          const c2 = yield* critic(p.timeline, pReport, "Critic is reviewing the polished take");
+          if (c2 && c2.score >= critique!.score) {
+            timeline = { ...p.timeline, name: p.timeline.name || timeline.name }; repairs = [...repairs, ...p.repairs]; report = pReport; validation = pVal; critique = c2;
+            yield { type: "timeline", timeline, repairs, report, validation, models: { ...models } };
+            yield { type: "step", id: "polish", role: "animator", label: `Polished take kept (${c2.score}/10)`, status: "ok" };
+          } else { yield { type: "step", id: "polish", role: "animator", label: "Kept the previous take (polish did not score higher)", status: "ok" }; break; }
+        } catch (e) { yield { type: "step", id: "polish", role: "animator", label: "Polish pass skipped", status: "skip", detail: (e as Error).message }; break; }
+      }
     }
     yield { type: "done", ms: Date.now() - t0, costUsd: cost, calls };
   } catch (e) {
     if (e instanceof OtariError) yield { type: "error", message: e.message, code: e.code, status: e.status, retryAfter: e.retryAfter, scope: e.scope };
     else yield { type: "error", message: (e as Error).message, code: null, status: 500 };
     yield { type: "done", ms: Date.now() - t0, costUsd: cost, calls };
+  }
+
+  async function* critic(tl: Timeline, rep: MotionReport, label: string): AsyncGenerator<PipelineEvent, Critique | null> {
+    yield { type: "step", id: "critic", role: "critic", label, status: "run" };
+    try {
+      const c = yield* call("critic", cfg.models.critic, { messages: [{ role: "system", content: CRITIC_SYSTEM }, { role: "user", content: `Request: ${input.prompt}\nDuration ${tl.duration}ms, loop ${tl.loop !== false}.\nTimeline:\n${describe(tl)}\n\nLint: ${JSON.stringify(rep.issues.slice(0, 10).map((i) => `${i.severity}: ${i.message}`))}` }], temperature: 0.2, max_tokens: 900, response_format: { type: "json_object" } });
+      const j = extractJson(c.content) as Partial<Critique>;
+      const critique: Critique = { score: Math.max(0, Math.min(10, Number(j.score) || 0)), verdict: String(j.verdict ?? ""), strengths: (j.strengths ?? []).map(String).slice(0, 3), fixes: (j.fixes ?? []).slice(0, 3).map((f: any) => ({ issue: String(f?.issue ?? f), suggestion: String(f?.suggestion ?? "") })), refine_prompt: String(j.refine_prompt ?? "") };
+      yield { type: "critique", critique };
+      yield { type: "step", id: "critic", role: "critic", label: `Critic scored it ${critique.score}/10`, status: "ok" };
+      return critique;
+    } catch (e) { yield { type: "step", id: "critic", role: "critic", label: "Critic unavailable", status: "fail", detail: (e as Error).message }; return null; }
   }
 
   async function* sandboxValidate(tl: Timeline): AsyncGenerator<PipelineEvent, SandboxValidation | null> {

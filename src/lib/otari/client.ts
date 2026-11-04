@@ -93,3 +93,18 @@ export async function getJson<T = unknown>(cfg: OtariConfig, path: string): Prom
   if (!res.ok) await fail(res);
   return res.json() as Promise<T>;
 }
+
+/** Price list from GET /models, cached per server instance (hosted Otari currently returns usage.cost_usd = null). */
+let priceCache: { at: number; map: Record<string, { in: number; out: number }> } | null = null;
+export async function estimateCost(cfg: OtariConfig, model: string, promptTokens: number, completionTokens: number): Promise<number | null> {
+  try {
+    if (!priceCache || Date.now() - priceCache.at > 3600_000) {
+      const j = await getJson<{ data?: { id: string; pricing?: { input_price_per_million?: number; output_price_per_million?: number } }[] }>(cfg, "/models");
+      const map: Record<string, { in: number; out: number }> = {};
+      for (const m of j.data ?? []) if (m.pricing) map[m.id] = { in: m.pricing.input_price_per_million ?? 0, out: m.pricing.output_price_per_million ?? 0 };
+      priceCache = { at: Date.now(), map };
+    }
+    const p = priceCache.map[model];
+    return p ? (promptTokens * p.in + completionTokens * p.out) / 1e6 : null;
+  } catch { return null; }
+}

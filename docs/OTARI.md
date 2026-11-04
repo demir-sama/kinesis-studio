@@ -21,4 +21,4 @@ Verified end to end on a **self-hosted** gateway (Otari + sandbox + SearXNG + Ol
 | `moonshotai/kimi-k2.6`, `alibaba/qwen3.8-max` | timed out through the gateway |
 | `xai/grok-4.7` | rejected with `response_format` |
 
-A full generate run (director + animator + sandbox + critic) costs about $0.01 and takes ~25 s. Note: hosted responses currently return `usage.cost_usd = null`, so the in-app cost meter reads $0; estimate from `/models` pricing.
+A full generate run (director + animator + sandbox + critic, plus polish passes when the critic scores below 8) costs about $0.01–0.03 and takes 25–70 s. On the reference prompts the critic moved from 7/10 to 8/10 after the timing rules, humanize/fit-to-frame passes and polish loop. Note: hosted responses currently return `usage.cost_usd = null`, so the app estimates cost from `/models` pricing and labels it "estimated from /models".

@@ -9,3 +9,5 @@ export { exportGsap } from "./export/gsap";
 export { exportFramer } from "./export/framer";
 export { exportLottie } from "./export/lottie";
 export { PRESETS } from "./presets";
+export * from "./frame";
+export * from "./humanize";

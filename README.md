@@ -8,12 +8,15 @@ Built for *MozFest Developers Wilding* on the [Otari](https://otari.ai) gateway.
 - **Studio editor**: a stage with onion-skinning and motion paths, a dopesheet, a cubic-bézier curve editor, an inspector with keyframe buttons, undo/redo and keyboard shortcuts. It autosaves locally.
 - **Motion engine** (`src/lib/motion`): the KTL timeline format, spring and bézier easing solvers, a normalizer that repairs bad input, and a motion "lint" that checks craft rules such as duration bands, overshoot and stagger. It has four exporters.
 - **AI agent via Otari** (`src/lib/ai`):
-  1. A **Director** model researches references with `otari_web_search` and consults Kinesis's own **MCP server** (`/api/mcp`). It writes a motion brief.
-  2. An **Animator** model keys the timeline and can check its maths with `otari_code_execution`.
-  3. The server normalizes and lints the result, then validates it in **Otari's sandbox** (`/code/execute`) using a Python twin of the validator. If anything fails, it runs one repair pass.
-  4. A **Critic** model scores the result and proposes a refine prompt, which you can apply with one click.
-- **Transparency**: every step, tool call, source, model, provider, fallback, token count, latency and cost is shown in the run log. Each visitor's Otari budget appears as a meter.
+  1. A **Director** (`deepseek/deepseek-v4-pro`) writes a motion brief. When the workspace allows it, it researches references with `otari_web_search` and consults Kinesis's own **MCP server** (`/api/mcp`); otherwise it falls back to a tool-free brief.
+  2. An **Animator** (`deepseek/deepseek-v4-pro`, JSON mode) keys the timeline against a strict spec with a worked example and hand-keying rules.
+  3. Deterministic craft passes: **humanize** (breaks up uniform staggers into a varied cascade) and **fit-to-frame** (keeps the resting layout inside a 40 px safe area). Then lint, and validation in **Otari's sandbox** (`/code/execute`) with a Python twin of the validator, plus one repair pass if needed.
+  4. A **Critic** (`deepseek/deepseek-v4.1-flash`, a different model) scores the motion. Below 8/10, the animator runs up to two **polish passes** on the critic's notes, each re-validated and re-scored; a take is kept only if it scores at least as well.
+- **Transparency**: every step, tool call, source, model, provider, fallback, token count, latency and cost is shown in the run log. Each visitor's Otari budget appears as a meter. When the gateway returns no `cost_usd`, cost is estimated from Otari's `/models` price list and labelled as an estimate.
 - Six hand-keyed presets are always available. They're labelled as presets, never as AI output.
+
+## Live
+https://kinesis-studio-sama-5806.vercel.app (Studio at `/studio`).
 
 ## Quick start
 ```bash

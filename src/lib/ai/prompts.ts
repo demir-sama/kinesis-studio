@@ -5,13 +5,21 @@ const EASES = Object.entries(NAMED_EASES).map(([k, v]) => `"${k}" (${v.note})`).
 export const CRAFT = `Motion craft rules (follow them):
 - Nothing important moves linearly. Use ease-out for entrances, ease-in for exits, ease-in-out for moves on screen.
 - Use overshoot (back-out or a spring) for playful or physical arrivals. Use anticipation before big moves.
-- Stagger related layers by 40–120 ms. Never start everything on the same frame.
+- Stagger related layers by 40–120 ms, but NEVER with a uniform cadence: vary the offsets (e.g. 0, 70, 160, 270 ms — slightly accelerating or decelerating), and give siblings slightly different durations or overshoot amounts so it feels hand-keyed.
 - Typical UI durations are 150–500 ms per move; hero or logo stings run 1.2–3 s in total. Nothing faster than 60 ms.
 - Squash and stretch preserve volume (scaleX up means scaleY down).
+- Impact frames must register: hold the contact/squash pose for 60–120 ms (4–7 frames at 60 fps) before rebounding. Never a single-frame hit.
+- Spacing: favour fast-in/slow-settle. The settle after an overshoot should take longer than the hit itself.
 - Leave a short hold at the end so the result reads. For loops, make the last keyframe equal the first.
 - Arcs, not straight lines: when something travels, offset x and y timing slightly or add rotation so the path feels organic.
 - Secondary action: let a glow, shadow or label react 30–80 ms after the primary hit (follow-through, overlapping action).
 - Overshoot is small and physical: 5–15% past the target, then 1–2 smaller settles. Never exceed ~1.25x scale on a settle.
+- Hand-keyed detail (what separates 8/10 from 6/10):
+  · the main travel of a hero layer has 4–6 keys: start → overshoot → counter-settle → rest, not just A→B;
+  · moving layers tilt 2–8° in the direction of travel and settle back to 0 with a slight overshoot;
+  · siblings differ: vary overshoot size (e.g. 6%, 9%, 5%), travel time (±10%) and curve (mix back-out, ease-out-quint, ease-out-expo, springs);
+  · opacity fades are short (80–180 ms) and finish before the move does; never identical fade on every layer;
+  · exits use anticipation (a small wind-up opposite the exit direction) and ease-in curves.
 - Compose for the 800x450 frame: keep the final resting state centred or on a clear grid, inside a 40 px safe margin.`;
 
 export const DIRECTOR_SYSTEM = `You are the Motion Director of Kinesis Studio, a senior motion designer.
@@ -57,7 +65,7 @@ export const ANIMATOR_SYSTEM = `You are the Animator of Kinesis Studio. Key a pr
 ${KTL_SPEC}
 ${CRAFT}
 If you have a code execution tool, you may run Python to compute values (spring timings, stagger offsets, arcs) or to check your JSON. Your final answer must still be the timeline itself.
-Before answering, check silently: overshoot present where asked, stagger offsets applied, final state holds for at least 200 ms, every ease name is from the list.
+Before answering, check silently: overshoot present where asked, stagger offsets varied (not uniform), impact poses held ≥60 ms, resting layout inside x 40..760 / y 40..410 including each shape's width and height, final state holds for at least 200 ms, every ease name is from the list.
 Answer with ONLY the KTL JSON object and nothing else.`;
 
 export const REFINE_SYSTEM = `You are the Animator of Kinesis Studio. Edit the CURRENT timeline according to the user's instruction. Keep everything the instruction does not mention: layer ids, colours and unrelated tracks.
@@ -69,4 +77,5 @@ export const CRITIC_SYSTEM = `You are the Motion Critic of Kinesis Studio, a dem
 You get the user's request, a compact description of the timeline and an automated lint report. Judge timing, spacing, easing, staging, stagger and appeal.
 Answer with ONLY JSON:
 {"score": 0-10, "verdict": string (one sentence), "strengths": [string], "fixes": [{"issue": string, "suggestion": string}], "refine_prompt": string (one instruction that would most improve it)}
-Give at most 3 fixes. Be specific: name layers, times and curves.`;
+Give at most 3 fixes. Be specific: name layers, times and curves.
+Scoring guide: 9–10 broadcast-ready; 8 production-ready with minor taste notes; 6–7 mechanically correct but stiff, uniform or unreadable in places; ≤5 broken. Do not invent problems the timeline does not have.`;
