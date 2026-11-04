@@ -1,0 +1,51 @@
+# Self-hosted Otari for local Kinesis development (see docs/SETUP.md).
+# No secrets live here: every credential is read from the environment.
+database_url: "sqlite:////data/otari.db"
+master_key: ${OTARI_MASTER_KEY}
+default_pricing: true
+require_pricing: false
+
+# Two small open-weight models served by a local Ollama.
+providers:
+  ollama:
+    api_base: "http://127.0.0.1:11434"
+
+# Caller-facing model names with fallbacks. Kinesis sends `model: kinesis-director` etc.
+routing:
+  policies:
+    kinesis-director:
+      select:
+        - default: ollama:qwen2.5:1.5b
+      on_failure:
+        - ollama:llama3.2:1b
+    kinesis-animator:
+      select:
+        # When an end user has burned most of their budget, drop to the smaller model.
+        - when:
+            budget_used_pct: {gte: 80}
+          target: ollama:llama3.2:1b
+        - default: ollama:qwen2.5:1.5b
+      on_failure:
+        - ollama:llama3.2:1b
+    kinesis-critic:
+      select:
+        - default: ollama:llama3.2:1b
+      on_failure:
+        - ollama:qwen2.5:1.5b
+
+# In-loop web search uses OTARI_WEB_SEARCH_URL (the local SearXNG), set in up.sh.
+web_search_max_calls: 4
+
+# Per-visitor budgets: Kinesis holds a service key and names each browser as an end user.
+budgets:
+  kinesis-visitor-daily: {max_budget: 0.05, reset_alignment: calendar_day, rpm_limit: 20}
+  kinesis-global: {max_budget: 5, reset_alignment: calendar_day}
+
+api_keys:
+  kinesis-app:
+    secret: ${KINESIS_SERVICE_KEY}
+    user_id: kinesis
+    is_service_key: true
+    end_user_budget_ids: [kinesis-visitor-daily]
+    end_user_budget_id: kinesis-visitor-daily
+    ceiling: kinesis-global
