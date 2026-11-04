@@ -23,11 +23,14 @@ export async function POST(req: Request) {
   const enc = new TextEncoder();
   const stream = new ReadableStream({
     async start(ctrl) {
+      // Heartbeat: a blank line every 8 s keeps proxies from dropping a quiet stream during long model calls (the client skips blank lines).
+      const beat = setInterval(() => { try { ctrl.enqueue(enc.encode("\n")); } catch {} }, 8000);
       try {
         for await (const ev of runPipeline(cfg, { prompt, mode, current, research: body?.research !== false, critique: body?.critique !== false, userId: endUserId(uid) }, req.signal)) {
           ctrl.enqueue(enc.encode(JSON.stringify(ev) + "\n"));
         }
       } catch (e) { ctrl.enqueue(enc.encode(JSON.stringify({ type: "error", message: (e as Error).message, code: null, status: 500 }) + "\n")); }
+      clearInterval(beat);
       ctrl.close();
     },
   });
