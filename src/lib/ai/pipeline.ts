@@ -38,8 +38,19 @@ function summarize(c: OtariToolCall): ToolSummary {
   return { type: c.type, status: c.status, query: c.query, sources: c.sources?.slice(0, 5).map((s) => ({ url: s.url, title: s.title })), code: c.code?.slice(0, 1600), stdout: c.stdout?.slice(0, 1200), exitCode: c.exit_code, server: c.server, name: c.name, error: err };
 }
 
+function easeLabel(e: unknown): string {
+  if (!e) return "ease-in-out-cubic";
+  if (typeof e === "string") return e;
+  const k = e as any;
+  if (k.type === "bezier") return k.name ?? `bez ${k.x1},${k.y1},${k.x2},${k.y2}`;
+  if (k.type === "spring") return `spring k${k.stiffness} c${k.damping}`;
+  if (k.type === "steps") return `steps ${k.count}`;
+  return k.type;
+}
+
+/** Compact text form of a timeline for the critic. Every segment shows the curve that leaves the key (missing = the engine default, ease-in-out-cubic). */
 function describe(tl: Timeline): string {
-  return tl.layers.map((l) => `${l.name} (${l.shape.kind}, ${l.fill}): ` + Object.entries(l.tracks).map(([p, tr]) => `${p} ${tr!.map((k) => `${k.t}ms=${+k.v.toFixed(2)}${k.ease ? `[${typeof k.ease === "object" ? k.ease.type === "bezier" ? `bez ${k.ease.x1},${k.ease.y1},${k.ease.x2},${k.ease.y2}` : k.ease.type : k.ease}]` : ""}`).join(" ")}`).join(" | ")).join("\n");
+  return tl.layers.map((l) => `${l.name} (${l.shape.kind}, ${l.fill}): ` + Object.entries(l.tracks).map(([p, tr]) => `${p} ${tr!.map((k, i) => `${k.t}ms=${+k.v.toFixed(2)}${i < tr!.length - 1 ? `[${easeLabel(k.ease)}]` : ""}`).join(" ")}`).join(" | ")).join("\n");
 }
 
 export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signal?: AbortSignal): AsyncGenerator<PipelineEvent> {
@@ -117,14 +128,14 @@ export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signa
       for (let pass = 1; pass <= 2 && critique && critique.score < 8 && input.mode === "generate" && input.polish !== false; pass++) {
         yield { type: "step", id: "polish", role: "animator", label: `Polish pass ${pass}: applying the critic's notes (${critique.score}/10)`, status: "run" };
         try {
-          const notes = [critique.refine_prompt, ...critique.fixes.map((f) => `${f.issue} → ${f.suggestion}`)].filter(Boolean).join("\n- ");
+          const notes = [critique.refine_prompt, ...critique.fixes.map((f) => `${f.issue} → ${f.suggestion}`), ...report.issues.slice(0, 4).map((i) => `Linter: ${i.message}`)].filter(Boolean).join("\n- ");
           const pr = yield* call("animator", cfg.models.animator, { messages: [{ role: "system", content: REFINE_SYSTEM }, { role: "user", content: `CURRENT timeline:\n${JSON.stringify(timeline)}\n\nOriginal request: ${input.prompt}\n\nA motion director reviewed it. Apply these notes, keep layer ids, colours and composition:\n- ${notes}\n\nAlso: vary stagger intervals (never a uniform cadence), hold every impact/contact pose for at least 60 ms, and keep the resting layout inside the 40 px safe margin.` }], temperature: 0.3, max_tokens: 8000, response_format: { type: "json_object" } });
           const p = normalizeTimeline(extractJson(pr.content));
           const pReport = lintTimeline(p.timeline);
           if (pReport.issues.some((i) => i.severity === "error")) throw new Error("polished timeline failed lint");
           const pVal = yield* sandboxValidate(p.timeline);
           if (pVal && !pVal.ok) throw new Error("polished timeline failed sandbox validation");
-          const c2 = yield* critic(p.timeline, pReport, "Critic is reviewing the polished take");
+          const c2 = yield* critic(p.timeline, pReport, "Critic is reviewing the polished take", critique);
           if (c2 && c2.score >= critique!.score) {
             timeline = { ...p.timeline, name: p.timeline.name || timeline.name }; repairs = [...repairs, ...p.repairs]; report = pReport; validation = pVal; critique = c2;
             yield { type: "timeline", timeline, repairs, report, validation, models: { ...models } };
@@ -140,10 +151,10 @@ export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signa
     yield { type: "done", ms: Date.now() - t0, costUsd: cost, calls };
   }
 
-  async function* critic(tl: Timeline, rep: MotionReport, label: string): AsyncGenerator<PipelineEvent, Critique | null> {
+  async function* critic(tl: Timeline, rep: MotionReport, label: string, prev?: Critique | null): AsyncGenerator<PipelineEvent, Critique | null> {
     yield { type: "step", id: "critic", role: "critic", label, status: "run" };
     try {
-      const c = yield* call("critic", cfg.models.critic, { messages: [{ role: "system", content: CRITIC_SYSTEM }, { role: "user", content: `Request: ${input.prompt}\nDuration ${tl.duration}ms, loop ${tl.loop !== false}.\nTimeline:\n${describe(tl)}\n\nLint: ${JSON.stringify(rep.issues.slice(0, 10).map((i) => `${i.severity}: ${i.message}`))}` }], temperature: 0.2, max_tokens: 900, response_format: { type: "json_object" } });
+      const c = yield* call("critic", cfg.models.critic, { messages: [{ role: "system", content: CRITIC_SYSTEM }, { role: "user", content: `Request: ${input.prompt}\nDuration ${tl.duration}ms, loop ${tl.loop !== false}.\nTimeline:\n${describe(tl)}\n\nLint: ${JSON.stringify(rep.issues.slice(0, 10).map((i) => `${i.severity}: ${i.message}`))}${prev ? `\n\nThis is a revised take. Your previous review (${prev.score}/10) asked for:\n- ${prev.fixes.map((f) => f.issue).join("\n- ")}\nFirst check whether each was fixed. Score the new take on the same scale; credit fixes that landed, and only list new issues that are real and visible.` : ""}` }], temperature: 0.2, max_tokens: 900, response_format: { type: "json_object" } });
       const j = extractJson(c.content) as Partial<Critique>;
       const critique: Critique = { score: Math.max(0, Math.min(10, Number(j.score) || 0)), verdict: String(j.verdict ?? ""), strengths: (j.strengths ?? []).map(String).slice(0, 3), fixes: (j.fixes ?? []).slice(0, 3).map((f: any) => ({ issue: String(f?.issue ?? f), suggestion: String(f?.suggestion ?? "") })), refine_prompt: String(j.refine_prompt ?? "") };
       yield { type: "critique", critique };

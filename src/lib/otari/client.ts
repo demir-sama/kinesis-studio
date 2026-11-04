@@ -46,7 +46,9 @@ export const userAttributionActive = () => !userFieldRejected;
 const isUserMismatch = (status: number, text: string) => status >= 400 && status < 500 && /'user' field/i.test(text);
 
 async function post(cfg: OtariConfig, path: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
-  const send = (b: Record<string, unknown>) => fetch(`${cfg.baseUrl}${path}`, { method: "POST", headers: headers(cfg), body: JSON.stringify(b), signal });
+  const once = (b: Record<string, unknown>) => fetch(`${cfg.baseUrl}${path}`, { method: "POST", headers: headers(cfg), body: JSON.stringify(b), signal });
+  // One retry on a network-level failure ("fetch failed"); HTTP errors are returned as-is.
+  const send = async (b: Record<string, unknown>) => { try { return await once(b); } catch (e) { if (signal?.aborted) throw e; await new Promise((r) => setTimeout(r, 800)); return once(b); } };
   const hasUser = "user" in body && body.user != null;
   const { user: _u, ...anon } = body;
   if (hasUser && userFieldRejected) return send(anon);
