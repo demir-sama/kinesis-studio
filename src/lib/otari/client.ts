@@ -36,9 +36,31 @@ async function fail(res: Response): Promise<never> {
   throw new OtariError(message, res.status, code, res.headers.get("Retry-After"), res.headers.get("Otari-Budget-Scope"));
 }
 
+/**
+ * Per-user attribution (`user` field) only works with an Otari *service* key. With a regular project key the
+ * gateway answers 4xx "'user' field does not match the authenticated API key's user". When that happens we
+ * drop the field for the rest of this server instance instead of failing every generation.
+ */
+let userFieldRejected = false;
+export const userAttributionActive = () => !userFieldRejected;
+const isUserMismatch = (status: number, text: string) => status >= 400 && status < 500 && /'user' field/i.test(text);
+
+async function post(cfg: OtariConfig, path: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  const send = (b: Record<string, unknown>) => fetch(`${cfg.baseUrl}${path}`, { method: "POST", headers: headers(cfg), body: JSON.stringify(b), signal });
+  const hasUser = "user" in body && body.user != null;
+  const { user: _u, ...anon } = body;
+  if (hasUser && userFieldRejected) return send(anon);
+  const res = await send(body);
+  if (!res.ok && hasUser) {
+    const text = await res.clone().text().catch(() => "");
+    if (isUserMismatch(res.status, text)) { userFieldRejected = true; return send(anon); }
+  }
+  return res;
+}
+
 export async function chat(cfg: OtariConfig, body: Record<string, unknown>, signal?: AbortSignal): Promise<ChatResult> {
   const t0 = Date.now();
-  const res = await fetch(`${cfg.baseUrl}/chat/completions`, { method: "POST", headers: headers(cfg), body: JSON.stringify({ stream: false, ...body }), signal });
+  const res = await post(cfg, "/chat/completions", { stream: false, ...body }, signal);
   if (!res.ok) await fail(res);
   const j = (await res.json()) as Record<string, any>;
   const msg = j.choices?.[0]?.message ?? {};
@@ -60,7 +82,7 @@ export async function chat(cfg: OtariConfig, body: Record<string, unknown>, sign
 export interface ExecResult { stdout: string; stderr: string; returnCode: number | null; ms: number }
 export async function executeCode(cfg: OtariConfig, code: string, user?: string, signal?: AbortSignal): Promise<ExecResult> {
   const t0 = Date.now();
-  const res = await fetch(`${cfg.baseUrl}/code/execute`, { method: "POST", headers: headers(cfg), body: JSON.stringify({ code, timeout_seconds: 30, ...(user ? { user } : {}) }), signal });
+  const res = await post(cfg, "/code/execute", { code, timeout_seconds: 30, ...(user ? { user } : {}) }, signal);
   if (!res.ok) await fail(res);
   const j = await res.json();
   return { stdout: j.stdout ?? "", stderr: j.stderr ?? "", returnCode: j.return_code ?? null, ms: Date.now() - t0 };

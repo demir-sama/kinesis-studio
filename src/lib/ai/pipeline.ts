@@ -65,13 +65,13 @@ export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signa
       yield { type: "step", id: "director", role: "director", label: "Motion brief ready", status: "ok" };
 
       // 2 · Animator — second open-weight model, with the code-execution sandbox.
-      yield { type: "step", id: "animator", role: "animator", label: "Animator is keying the timeline", status: "run", detail: cfg.codeExecution ? "code execution available" : undefined };
-      const a = yield* call("animator", cfg.models.animator, { messages: [{ role: "system", content: ANIMATOR_SYSTEM }, { role: "user", content: `User request: ${input.prompt}\n\nMotion brief:\n${JSON.stringify(brief)}` }], temperature: 0.4, max_tokens: 6000, ...(cfg.codeExecution ? { tools: [{ type: "otari_code_execution" }] } : {}) });
+      yield { type: "step", id: "animator", role: "animator", label: "Animator is keying the timeline", status: "run", detail: cfg.animatorTools && cfg.codeExecution ? "code execution available" : "structured JSON output" };
+      const a = yield* call("animator", cfg.models.animator, { messages: [{ role: "system", content: ANIMATOR_SYSTEM }, { role: "user", content: `User request: ${input.prompt}\n\nMotion brief:\n${JSON.stringify(brief)}` }], temperature: 0.35, max_tokens: 8000, ...(cfg.animatorTools && cfg.codeExecution ? { tools: [{ type: "otari_code_execution" }] } : { response_format: { type: "json_object" } }) });
       ({ timeline, repairs } = normalizeTimeline(extractJson(a.content)));
     } else {
       if (!input.current) throw new OtariError("Nothing to refine yet", 400, "bad_request");
       yield { type: "step", id: "animator", role: "animator", label: "Animator is editing the timeline", status: "run" };
-      const a = yield* call("animator", cfg.models.animator, { messages: [{ role: "system", content: REFINE_SYSTEM }, { role: "user", content: `CURRENT timeline:\n${JSON.stringify(input.current)}\n\nInstruction: ${input.prompt}` }], temperature: 0.3, max_tokens: 6000, ...guard });
+      const a = yield* call("animator", cfg.models.animator, { messages: [{ role: "system", content: REFINE_SYSTEM }, { role: "user", content: `CURRENT timeline:\n${JSON.stringify(input.current)}\n\nInstruction: ${input.prompt}` }], temperature: 0.3, max_tokens: 8000, response_format: { type: "json_object" }, ...guard });
       ({ timeline, repairs } = normalizeTimeline(extractJson(a.content)));
     }
     yield { type: "step", id: "animator", role: "animator", label: `Timeline keyed: ${timeline.layers.length} layers, ${repairs.length} auto-repairs`, status: "ok" };
@@ -82,7 +82,7 @@ export async function* runPipeline(cfg: OtariConfig, input: PipelineInput, signa
     const errs = () => [...report.issues.filter((i) => i.severity === "error").map((i) => i.message), ...(validation?.errors ?? [])];
     if (errs().length) {
       yield { type: "step", id: "repair", role: "repair", label: `Repairing ${errs().length} problem(s)`, status: "run" };
-      const r = yield* call("repair", cfg.models.animator, { messages: [{ role: "system", content: REFINE_SYSTEM }, { role: "user", content: `CURRENT timeline:\n${JSON.stringify(timeline)}\n\nThe validator found these problems; fix every one of them:\n- ${errs().join("\n- ")}` }], temperature: 0.2, max_tokens: 6000, response_format: { type: "json_object" } });
+      const r = yield* call("repair", cfg.models.animator, { messages: [{ role: "system", content: REFINE_SYSTEM }, { role: "user", content: `CURRENT timeline:\n${JSON.stringify(timeline)}\n\nThe validator found these problems; fix every one of them:\n- ${errs().join("\n- ")}` }], temperature: 0.2, max_tokens: 8000, response_format: { type: "json_object" } });
       try {
         const fixed = normalizeTimeline(extractJson(r.content));
         timeline = fixed.timeline; repairs = [...repairs, ...fixed.repairs];

@@ -9,6 +9,8 @@ export interface OtariConfig {
   mcpUrl: string | null;
   research: boolean;
   codeExecution: boolean;
+  /** Give the animator the code-execution tool (off by default: strong models key better with plain JSON mode). */
+  animatorTools: boolean;
 }
 
 function parseGuardrails(raw: string | undefined): OtariConfig["guardrails"] {
@@ -27,8 +29,8 @@ export function otariConfig(): OtariConfig {
     baseUrl: (e.OTARI_BASE_URL || "https://api.otari.ai/api/v1").replace(/\/$/, ""),
     apiKey: e.OTARI_API_KEY?.trim() || null,
     models: {
-      director: e.KINESIS_MODEL_DIRECTOR || "deepseek/deepseek-v4.1-flash",
-      animator: e.KINESIS_MODEL_ANIMATOR || "z-ai/glm-5.3",
+      director: e.KINESIS_MODEL_DIRECTOR || "deepseek/deepseek-v4-pro",
+      animator: e.KINESIS_MODEL_ANIMATOR || "deepseek/deepseek-v4-pro",
       critic: e.KINESIS_MODEL_CRITIC || "deepseek/deepseek-v4.1-flash",
     },
     perUser: e.OTARI_PER_USER === "1" || e.OTARI_PER_USER === "true",
@@ -37,5 +39,6 @@ export function otariConfig(): OtariConfig {
     mcpUrl,
     research: e.KINESIS_RESEARCH !== "off",
     codeExecution: e.KINESIS_CODE_EXECUTION !== "off",
+    animatorTools: e.KINESIS_ANIMATOR_TOOLS === "on",
   };
 }
