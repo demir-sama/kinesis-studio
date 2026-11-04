@@ -8,3 +8,4 @@ export { exportCss, cssTiming } from "./export/css";
 export { exportGsap } from "./export/gsap";
 export { exportFramer } from "./export/framer";
 export { exportLottie } from "./export/lottie";
+export { PRESETS } from "./presets";
